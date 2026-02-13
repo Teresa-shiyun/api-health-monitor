@@ -1,0 +1,5 @@
+[
+  { "name": "GitHub API", "url": "https://api.github.com" },
+  { "name": "HTTPBin 200", "url": "https://httpbin.org/status/200" },
+  { "name": "HTTPBin 500 (Demo Failure)", "url": "https://httpbin.org/status/500" }
+]

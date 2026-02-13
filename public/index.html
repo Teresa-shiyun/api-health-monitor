@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>API Health Monitor</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 24px; }
+    .row { display: flex; gap: 16px; flex-wrap: wrap; }
+    .card { border: 1px solid #ddd; border-radius: 12px; padding: 14px 16px; min-width: 220px; }
+    .kpi { font-size: 28px; font-weight: 700; margin-top: 6px; }
+    table { width: 100%; border-collapse: collapse; margin-top: 16px; }
+    th, td { border-bottom: 1px solid #eee; padding: 10px 8px; text-align: left; }
+    th { background: #fafafa; }
+    .ok { color: #118a2e; font-weight: 700; }
+    .bad { color: #c01818; font-weight: 700; }
+    .muted { color: #666; font-size: 13px; }
+    #err { margin:10px 0; color:#c01818; font-weight:700; }
+  </style>
+</head>
+
+<body>
+  <h2>API Health Monitor Dashboard</h2>
+  <div class="muted">Auto-checks run periodically and are stored in SQLite.</div>
+  <div id="err"></div>
+
+  <div class="row" style="margin-top:16px;">
+    <div class="card">
+      <div class="muted">Checks (latest 100)</div>
+      <div class="kpi" id="kpiTotal">-</div>
+    </div>
+    <div class="card">
+      <div class="muted">Uptime %</div>
+      <div class="kpi" id="kpiUptime">-</div>
+    </div>
+    <div class="card">
+      <div class="muted">Avg Latency (ms)</div>
+      <div class="kpi" id="kpiAvg">-</div>
+    </div>
+    <div class="card">
+      <div class="muted">Failures</div>
+      <div class="kpi" id="kpiFail">-</div>
+    </div>
+  </div>
+
+  <h3 style="margin-top:18px;">Current Status</h3>
+  <table>
+    <thead>
+      <tr>
+        <th>Name</th>
+        <th>URL</th>
+        <th>Status</th>
+        <th>Latency</th>
+        <th>Last Checked</th>
+      </tr>
+    </thead>
+    <tbody id="statusRows"></tbody>
+  </table>
+
+  <div class="card" style="margin-top:16px;">
+    <canvas id="latencyChart"></canvas>
+  </div>
+
+  <h3 style="margin-top:18px;">Latest Checks</h3>
+  <table>
+    <thead>
+      <tr>
+        <th>Time</th>
+        <th>URL</th>
+        <th>Status</th>
+        <th>Latency</th>
+        <th>Error</th>
+      </tr>
+    </thead>
+    <tbody id="rows"></tbody>
+  </table>
+
+  <script>
+    let chart;
+
+    function fmtTime(s) {
+      return (s ?? "").toString().replace("T", " ").replace(".000Z", "");
+    }
+
+    async function loadData() {
+      try {
+        // metrics
+        const res = await fetch("/api/metrics");
+        if (!res.ok) throw new Error("GET /api/metrics failed: " + res.status);
+        const data = await res.json();
+        if (!Array.isArray(data)) throw new Error("/api/metrics did not return an array");
+
+        document.getElementById("kpiTotal").textContent = data.length;
+
+        const successCount = data.filter(d => d.success === 1).length;
+        const failCount = data.length - successCount;
+        const uptime = data.length ? (successCount / data.length * 100) : 0;
+
+        const avgLatency = data.length
+          ? Math.round(data.reduce((sum, d) => sum + (d.latency || 0), 0) / data.length)
+          : 0;
+
+        document.getElementById("kpiUptime").textContent = uptime.toFixed(1);
+        document.getElementById("kpiAvg").textContent = avgLatency;
+        document.getElementById("kpiFail").textContent = failCount;
+
+        // latest checks table
+        const tbody = document.getElementById("rows");
+        tbody.innerHTML = "";
+        data.slice(0, 20).forEach(d => {
+          const tr = document.createElement("tr");
+          tr.innerHTML = `
+            <td>${fmtTime(d.timestamp)}</td>
+            <td>${d.url ?? ""}</td>
+            <td class="${d.success === 1 ? "ok" : "bad"}">${d.success === 1 ? (d.status_code || "OK") : (d.status_code || "FAIL")}</td>
+            <td>${d.latency ?? ""}</td>
+            <td>${d.error ?? ""}</td>
+          `;
+          tbody.appendChild(tr);
+        });
+
+        // chart
+        if (typeof Chart !== "undefined") {
+          const labels = [...data].reverse().map(d => fmtTime(d.timestamp));
+          const values = [...data].reverse().map(d => d.latency || 0);
+
+          const ctx = document.getElementById("latencyChart");
+          if (chart) chart.destroy();
+          chart = new Chart(ctx, {
+            type: "line",
+            data: { labels, datasets: [{ label: "Latency (ms)", data: values }] },
+            options: { responsive: true, animation: false, scales: { x: { display: false } } }
+          });
+        }
+
+        // current status
+        const sres = await fetch("/api/status");
+        if (!sres.ok) throw new Error("GET /api/status failed: " + sres.status);
+        const statusData = await sres.json();
+
+        const statusBody = document.getElementById("statusRows");
+        statusBody.innerHTML = "";
+        statusData.forEach(ep => {
+          const last = ep.last;
+          const ok = last && last.success === 1;
+          const tr = document.createElement("tr");
+          tr.innerHTML = `
+            <td>${ep.name ?? ""}</td>
+            <td>${ep.url ?? ""}</td>
+            <td class="${ok ? "ok" : "bad"}">${ok ? "OK" : "FAIL"}</td>
+            <td>${last?.latency ?? ""}</td>
+            <td>${last ? fmtTime(last.timestamp) : ""}</td>
+          `;
+          statusBody.appendChild(tr);
+        });
+
+        document.getElementById("err").textContent = "";
+      } catch (e) {
+        document.getElementById("err").textContent = "Frontend error: " + e.message;
+        console.error(e);
+      }
+    }
+
+    loadData();
+    setInterval(loadData, 5000);
+  </script>
+</body>
+</html>
+
